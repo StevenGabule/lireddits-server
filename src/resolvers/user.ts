@@ -1,7 +1,9 @@
-import {Arg, Ctx, Field, InputType, Mutation, ObjectType, Query, Resolver} from "type-graphql";
-import {MyContext} from "../types";
-import {hash, verify} from "argon2";
-import {User} from "../entities/User";
+import { EntityManager } from '@mikro-orm/core';
+import { Arg, Ctx, Field, InputType, Mutation, ObjectType, Query, Resolver } from "type-graphql";
+import { MyContext } from "../types";
+import { hash, verify } from "argon2";
+import { User } from "../entities/User";
+import { COOKIE_NAME } from '../constants';
 
 @InputType()
 class UsernamePasswordInput {
@@ -22,30 +24,30 @@ class FieldError {
 
 @ObjectType()
 class UserResponse {
-    @Field(() => [FieldError], {nullable: true})
+    @Field(() => [FieldError], { nullable: true })
     errors?: FieldError[];
 
-    @Field(() => User, {nullable: true})
+    @Field(() => User, { nullable: true })
     user?: User;
 }
 
 @Resolver()
 export class UserResolver {
 
-    @Query(() => User, { nullable: true})
-    async me(@Ctx() {req, em}: MyContext) {
+    @Query(() => User, { nullable: true })
+    async me(@Ctx() { req, em }: MyContext) {
         // you aren't logged in
         if (!req.session.userId) {
             return null;
         }
-        const user = await em.findOne(User, {id: req.session.userId});
+        const user = await em.findOne(User, { id: req.session.userId });
         return user;
     }
 
     @Mutation(() => UserResponse)
     async register(
         @Arg('options') options: UsernamePasswordInput,
-        @Ctx() {em, req}: MyContext) : Promise<UserResponse> {
+        @Ctx() { em, req }: MyContext): Promise<UserResponse> {
 
         if (options.username.length <= 2) {
             return {
@@ -66,16 +68,27 @@ export class UserResolver {
         }
 
         const hashedPassword = await hash(options.password);
-        const user = em.create(User, {
-            username: options.username,
-            password: hashedPassword
-        });
+        // const user = em.create(User, {
+        //     username: options.username,
+        //     password: hashedPassword
+        // });
+        let user;
         try {
-            await em.persistAndFlush(user);
-
+            // await em.persistAndFlush(user);
+            const result = await (em as EntityManager)
+                .createQueryBuilder(User)
+                .getKnexQuery()
+                .insert({
+                    username: options.username,
+                    password: hashedPassword,
+                    created_at: new Date(),
+                    updated_at: new Date(),
+                }).returning("*");
+            user = result[0];
         } catch (e) {
             // check for username duplication
-            if (e.code === "23505") {
+            // e.code === "23505"
+            if (e.detail.includes('already exists')) {
                 return {
                     errors: [{
                         field: 'username',
@@ -88,15 +101,15 @@ export class UserResolver {
 
         req.session.userId = user.id;
 
-        return {user};
+        return { user };
     }
 
     @Mutation(() => UserResponse)
     async login(
         @Arg('options') options: UsernamePasswordInput,
-        @Ctx() {em, req}: MyContext
-    ) : Promise<UserResponse> {
-        const user = await em.findOne(User, {username: options.username});
+        @Ctx() { em, req }: MyContext
+    ): Promise<UserResponse> {
+        const user = await em.findOne(User, { username: options.username });
         if (!user) {
             return {
                 errors: [{
@@ -120,6 +133,21 @@ export class UserResolver {
 
         req.session.userId = user.id;
 
-        return {user};
+        return { user };
+    }
+
+    @Mutation(() => Boolean)
+    logout(@Ctx() { req, res }: MyContext) {
+        return new Promise(resolved =>
+            req.session.destroy((err: any) => {
+                res.clearCookie(COOKIE_NAME);
+                if (err) {
+                    console.log();
+                    resolved(false)
+                    return;
+                }
+                resolved(true);
+            })
+        );
     }
 }
